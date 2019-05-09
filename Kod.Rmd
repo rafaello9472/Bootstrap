@@ -1,0 +1,352 @@
+---
+title: "Bootstrap"
+output: html_document
+---
+
+## Wprowadzenie 
+
+Celem tego projektu jest budowa modelu liniowego dla spalania w danych dotyczącucch samochodów osobowych dla dostarczonych danych. Należy to zbadać przy wykorzystaniu klasycznych metod ekonometrycznych oraz metod bootstrapowych. 
+<br/> Projekt składa się z czterech części:
+<ul>
+<li>Wprowadzenie</li>
+<li>Analiza wizualna oraz opisowa</li>
+<li>Budowa modelu liniowego</li>
+<li>Podsumowanie</li>
+</ul>
+
+We wprowadzeniu przedstawię ogólny opis problemu i wykorzystanych danych. Zostaną tutaj także zaprezentowane hipotezy, które poddam weryfikacji w dalszej częsci pracy
+
+#### Opis problemu
+
+W celu zbudowania dobrego modelu, należy najpierw ustalić co dokładnie ma zostać zbadane. Głównym zadaniem tego projektu jest ustalenie wpływu wybranych czynników na wysokość spalania liczoną w litrach na 100 kilometrów. W zbiorze danych oprócz zmiennej objaśnianej, znajduje się osiem innych zmiennych, które mogą zostać wykorzystane do budowy modelu. Problem jaki należy rozwiązać to dobór odpowiednich zmiennych, które najlepiej będą opisywać badane zjawisko, a także przeprowadzenie diagnostyki takiego modelu.
+
+Do osiągnięcia tego celu zostanie zbudowane kilka modeli. Pierwszy będzie uwzględniał wszystkie zmienne, dzięki temu będzie można wyciągnąć pierwsze wnioski na temat badanego zjawiska. Drugi model zostanie zbudowany na podsawie zmiennych wybranych za pomocą metody Hellwiga. Na koniec, zajmę się budową modelu przy pomocy metody bootstrapowej. Praca zakończy się wybraniem najlepszego modelu i przedstawieniem wniosków. 
+
+#### Opis danych
+
+Dane, wykorzystane w projekcie pochodzą z pliku *cars.csv* i dotyczą samochodów osobowych.
+<br/>Plik ten oryginalnie zawierał 9 zmiennych, które specyfikują dany samochód:
+<ul>
+<li>**mpg** - spalanie w galonach na milę</li>
+<li>**cylinders** - liczba cylindrów</li>
+<li>**displacement** - objętość silnika w calach sześciennych</li>
+<li>**horsepower** - moc w koniach mechanicznych</li>
+<li>**weight** - waga w funtach</li>
+<li>**acceleration** - czas przyspieszenia od 0 do 60 mil na godzinę, podany w sekundach</li>
+<li>**year** - rok produkcji</li>
+<li>**origin** - miejsce produkcji (przyjmuje wartości 1-3, gdzie: 1-USA, 2-Europa, 3-Japonia)</li>
+<li>**name** - nazwa samochodu</li>
+</ul>
+
+Ze względu na różnice w jednostkach opisujących dane w pliku a tymi powszechnie wykorzystywanymi w Polsce, zmienne zostały poddane pewnym modyfikacjom.
+
+<br/> Przekształcenia jakim zostały poddane zmienne:
+<ul>
+<li>Zmiana **mpg** (miles per galon) na litry na 100 kilometrów (nazwa została również zmieniona na: **lp100km**</li>
+<li>Przeliczenie objętości silnika z cali sześciennych na centymetry sześcienne</li>
+<li>Przeliczenie wagi pojazdów z funtów na kilogramy</li>
+<li>Przeliczenie przyśpieszenia z *od 0 do 60 mph* do *od 0 do 100 km/h*</li>
+</ul>
+
+Dodatkowo aby móc wykorzystać zmienną origin, która jest zmienną kategoryczną przyjmującą trzy wartości, została ona rozkodowana na 3 zmienne zero-jedynkowe, które przyjmują 1 gdy samochód pochodzi z danego miejsca oraz 0 w przeciwnym przypadku. Na koniec tego kroku usuwam również zmienną **name** ponieważ jest ona nieprzydatna w dalszej analizie
+```{r Wczytanie bibliotek i danych, message = F, warning = F, echo = F}
+library(magrittr)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(corrplot)
+library(bootStepAIC)
+library(e1071)
+library(lmtest)
+library(tseries)
+cars <- read.csv("~/Desktop/Studia Magisterka/II rok/I semestr/9 semestr/Metody nieparametryczne w R/Projekty/Projekt 3/cars.csv", sep = ",") %>% data.table::data.table()
+
+```
+
+```{r Wprowadzenie, echo = T, message = F, warning= F}
+# Przeliczenie jednostek
+cars %<>% mutate_at("mpg", function(x) {x = 282.5/x}) %>% rename("lp100km" = "mpg") %>%
+  mutate_at("displacement", function(x){x = x/0.061024}) %>%
+  mutate_at("weight", function(x){x = x/2.2046}) %>%
+  mutate_at("acceleration", function(x){x = x*1.03561865})
+
+
+# Stworzenie nowych zmiennych oraz usunięcie niepotrzebnych
+cars %<>% mutate(USA = ifelse(origin == 1,1,0)) %>%
+  mutate(Europe = ifelse(origin == 2,1,0)) %>%
+  mutate(Japan = ifelse(origin == 3,1,0)) %>%
+  dplyr::select(-origin,-name)
+
+```
+
+#### Hipoteza
+
+Biorąc pod uwagę dane jakimi dysponuję oraz cel projektu, postanowiłem przetestować następującą hipotezę:
+<br/> H0: Bootstrapowa metoda doboru zmiennych jest skuteczniejsza niż klasyczne metody ekonometryczne doboru oraz estymacji zmiennych.
+<br/> H1: Bootstrapowa metoda doboru zmiennych nie jest skuteczniejsza niż klasyczne metody ekonometryczne.
+
+## Analiza wizualna oraz opisowa
+
+W pierwszym kroku przedstawię podstawowe statystyki opisowe finalnego zbioru danych na którym będzie kontynuowana dalsza część projektu. 
+
+```{r Pzedstawienie statystyk opisowych dotyczących kolumn liczbowych, echo = F, include = T}
+cars %>% dplyr::select(-USA, -Europe, -Japan) %>%
+  tidyr::gather(key = "Zmienna", value = "wartość") %>%
+  group_by(Zmienna) %>%
+  dplyr::summarise(Średnia = mean(wartość),Mediana = median(wartość), "Min." = min(wartość),
+  "Max." = max(wartość), "Odch. stand" = sd(wartość), "Wsp. zmienn." = sd(wartość)/mean(wartość),
+  "Skośność" = skewness(wartość), "Kurtoza" = kurtosis(wartość)) -> statystyki_opisowe
+
+knitr::kable(statystyki_opisowe, digits = 2, caption = "Podstawowe statystyki opisowe")
+```
+
+Powyższa tabela przedstawia statystyczne miary takie jak: średnią, medianę, wartość minimalną oraz maksymalną, odchylenie standardowe, współczynnik zmienności, a także skośność oraz kurtozę. Nie będę opisywał wsszystkich statystyk ponieważ nie jest to celem projektu. Skupię się natomiast na dwóch istotnych rzeczach. Wszystkie zmienne poza *year* mają niewielką prawostronną asymetrię rozkładu. Najważniejszą rzeczą z punktu widzenia dalszej analizy, jest wartość współczynnika skośności dla poszczególnych zmiennych. W przypadku posiadania przez którąś z nich wartości mniejszej niż 10% zalecane jest jej niewykorzystywanie w modelu. Spowodowane jest to tym, że uznawane są one za zmienne quasi-stałe, czyli posiadające zbyt niską zmienność.
+
+Kierując się spostrzeżeniem odnośnie zmiennej *year* zostanie ona usunięta ze zbioru danych
+```{r Usuniecie zmiennej year, echo = T }
+cars %<>% dplyr::select(-year)
+```
+
+
+Równie dobrym, a może nawet lepszym, zobrazowaniem wybranych zmiennych będzie ich przedstawienie na wykresie. Dlatego też dane zostaną zaprezentowane za pomocą wykresów pudełkowych oraz histogramów
+```{r Wizualizacja, echo = T, include = T, warning=F, error=F, message=F}
+# Transformacja danych do postaci "przyjaznej" ggplotowi
+plot_data <- cars %>% dplyr::select(-USA, -Europe, -Japan) %>%
+  tidyr::gather(key = "zmienna", value = "wartość")
+
+# Wykresy pudełkowe
+ggplot(plot_data, aes(x = 1, y = wartość)) + geom_boxplot() + facet_wrap(~ zmienna, scales = "free") + theme_minimal() + ggtitle("Wykresy pudełkowe") + xlab("") + ylab("")
+
+# Histogramy
+ggplot(plot_data, aes(wartość)) + geom_histogram(bin = 17) + facet_wrap(~ zmienna, scales = "free") + theme_minimal() + ggtitle("Histogramy") + xlab("") + ylab("")
+```
+
+```{r Korelacje midzy zmiennymi, echo = F, include = T}
+cars %>% 
+  cor() %>%
+  corrplot.mixed(tl.col="black", mar = c(0, 0, 2, 0), tl.pos = "lt", title = "Korelacja pomiędzy zmiennymi")
+```
+Za pomocą powyższego wykresu została zbadana korelacja Pearsona pomiędzy zmiennymi. Powyżej przekątnej mamy wyniki graficzne w postaci kół - im większe kółko tym wyższa korelacja, a znak korelacji (dodatani lub ujemny) zależy od koloru i opisany jest na legendzie. Poniżej przekątnej znajdują się natomiast wartości liczbowe odpowiadające korelacji między danymi zmiennymi. Na tej podstawie możemy wysnuć kilka związków: 
+<ul>
+<li>*lp100km* jest mocno skorelowane z: *cylinders, displacement, horsepower* oraz *weight* - jest to dodatnia korelacja</li>
+<li>*cylinders* jest mocno (dodatnio) skorelowane z: *displacement, horsepower* i *weight*;</li>
+<li>*displacement* wykazuje najwyższą dodatnią korelację z *horsepower* i *weight*;</li>
+<li>*horsepower* zdecydowanie najmocniej skorelowane jest dodatnio z *displacement*;</li>
+<li>w pozostałych parach zmiennych nie widać wysokich zależności, korelacja jest raczej umiarkowana (o czym świadczą również małe kółka o niskiej intesywności barw).</li>
+</ul>
+Na podstawie takich wniosków, można podejrzewać, że zbudowane modele mają dużą szansę poprawnego przewidywania badanej zmiennej.
+
+#### Na podstawie uzyskanych statystyk opisowych i wykresów uzasadnione wydaje się postawienie następujących hipotez: 
+
+1.) <br/>
+H0: Wraz ze zwiększeniem liczby cylindrów rośnie spalanie samochodu [liczone w l/km]. <br/>
+H1: Wraz ze zwiększeniem liczby cylindrów maleje spalanie samochodu [liczone w l/km].<br/>
+2.) <br/>
+H0: Wraz ze zwiększeniem objętości silnika [liczonej w cm^3] rośnie spalanie samochodu [l/km]. <br/>
+H1: Wraz ze zwiększeniem objętości silnika [liczonej w cm^3] maleje spalanie samochodu [l/km].<br/>
+3.) <br/>
+H0: Wraz ze zwiększeniem mocy [w koniach mechanicznych] rośnie spalanie samochodu [l/km]. <br/>
+H1: Wraz ze zwiększeniem mocy [w koniach mechanicznych] maleje spalanie samochodu [l/km].<br/>
+4.) <br/>
+H0: Wraz ze zwiększeniem wagi samochodu [w kg] rośnie jego spalanie [l/km]. <br/>
+H1: Wraz ze zwiększeniem wagi samochodu [w kg] maleje jego spalanie [l/km].<br/>
+5.) <br/>
+H0: Samochody wyprodukowane w USA mają większe średnie spalanie niż samochody z innych regionów.<br/>
+H1: Samochody wyprodukowane w USA mają mniejsze średnie spalanie niż samochody z innych regionów.<br/>
+
+## Budowa modelu liniowego
+
+Budowa poprawnego modelu zostanie rozpoczeta od zbudowania modelu, gdzie zmienna objaśniana to *lp100km*, a zmiennymi objaśniającymi są wszystkie pozostałe zmienne. W modelu nie została uwzględniona zmienna *Japan*, ponieważ jest ona liniowo zależna od zmiennych *USA* i *Europe* (gdyż są to zmienne 0-1 uzyskane ze zmiennej jakościowej origin).
+
+```{r KMNK, echo= T, include = T}
+model <- stats::lm(lp100km ~ ., data = dplyr::select(cars, - Japan))
+summary(model)
+```
+
+Z otrzymanych wyników można odczytać, które zmienne są istotne w naszym modelu. W tabeli *Coefficients*, w ostatniej kolumnie znajdują się gwiazdki, świadczące o tym, czy zmienna jest istotna w naszym modelu. Widzimy, że gwiazdki otrzymały zmienne: *horsepower*, *weight* i *acceleration*. Współczynnik dopasowania R-kwadrat wynosi około 83% co oznacza, że zmienność zmiennej objaśnianej jest w 83% tłumaczona przez zmienne objaśniajace.
+
+Wydawać by się mogło, że tak wysokie R-kwadrat pokazuje, że jest do dobry model. Jednak występuje w nim dużo zmiennych nieistotnych, dlatego też koeljnym etapem będzie dobór zmiennych za pomocą metody Hellwiga. Dopiero tak zbudowany model zostanie całkowicie przetestowany. 
+
+#### Dobór zmiennych metodą Hellwiga
+
+Metoda Hellwiga to metoda pozwalająca dobrać zmienne, które spełniają następujące kryterium: zmienne objaśniające powinny być silnie skorelowane ze zmienną objaśnianą, a słabo skorelowane ze sobą nawzajem. Dobór takich zmiennych polega na obliczeniu wskaźników integralnych oraz indywidualnych pojemności informacyjnej. 
+
+Metoda ta została już zaimplementowana przez kogoś w internecie, dlatego skorzystam z jej gotowego kodu:
+```{r Hellwig, echo = T, include = T}
+# Metoda Hellwiga
+hellwig <- function( y, x, method="pearson")
+{
+  requireNamespace("utils")
+  x <- as.data.frame(x)
+  cm <- stats::cor(x, method=method) # correlation matrix among indeps
+  cd <- stats::cor(x, y, method=method) # correlations with dependent
+  # list of combination vectors
+  k <- sapply( seq(2, length(x)), function(i)
+              utils::combn(length(x), i, simplify=FALSE) )
+  k <- do.call("c", k)
+  # function calculating individual capacities
+  hfun <- function(v)
+  {
+    sapply(v, function(i) cd[i]^2 / sum(abs(cm[v,i])) )
+  }
+  h <- sapply(k, hfun)
+  data.frame( k = sapply( k, paste, collapse="-"),
+             h = sapply(h, sum),
+             stringsAsFactors=FALSE)
+}
+
+# Wybranie kombinacji o najwyższym wskaźniku pojemności integralnej
+hellwig(y = cars$lp100km, cars %>% dplyr::select(-lp100km), method = "spearman") %>%
+  dplyr::arrange(desc(h)) %>% head(1)
+
+# Wyświetlenie zmiennych w odpowiednej kolejności
+cars %>% dplyr::select(-lp100km) %>% colnames()
+```
+Zmienne wskazane przez metodę Hellwiga to: *cylinders*, *horsepower* a także *weight*. Na tych właśnie zmiennych zostanie zbudowany kolejny model: 
+```{r, echo = F}
+model_hell <- stats::lm(lp100km ~ cylinders + horsepower + weight, data = cars)
+summary(model_hell)
+```
+Jak widać model uzyskany za pomocą tych zmiennych, ma prawie identyczne współczynnik determinacji R-kwadrat co pierwszy model, zbudowany na o wiele większej liczbie zmiennych. W tym modelu występuje tylko jedna zmienna nieistotna *cylinders*. 
+
+##### Diagnostyka modelu
+*Dla każdego z testów przyjęty został poziom istotności alfa = 0.05* <br/>
+
++ Testem RESET zbadane zostanie, czy wybór postaci analitycznej modelu jest prawidłowy:
+```{r echo=F}
+resettest(model_hell)
+```
+Z wyników można odczytać, że wartość p-value jest większa od przyjętego poziomu istotności dlatego nie ma podstaw do odrzucenia hipotezy zerowej testu. Wybór postaci analitycznej modelu jest prawidłowy.
+
++ Testem Jargue-Bera zbadane zostanie, czy reszty mają rozkład normalny:
+```{r echo=F}
+jarque.bera.test(model_hell$residuals)
+```
+Z wyników można odczytać, że wartość p-value jest mniejsza od przyjętego poziomu istotności dlatego należy odrzucić hipotezę zerową. Reszty nie mają rozkładu normalnego.
+
++ Testem Breuscha-Pagana zbadane zostanie, czy model jest homoskedastyczny:
+```{r echo=F}
+bptest(model_hell)
+```
+Z wyników można odczytać, że wartość p-value jest mniejsza od przyjętego poziomu istotności dlatego należy odrzucić hipotezę zerową. Badany model nie jest homoskedastyczny.
+
++ Testem Breuscha-Godfrey’a zbadane zostanie, czy w modelu występuje autokorelacja.
+```{r echo=F}
+bgtest(model_hell)
+```
+Z wyników można odczytać, że wartość p-value jest większa od przyjętego poziomu istotności dlatego nie ma podstaw do odrzucenia hipotezy zerowej testu. W modelu nie występuje autokorelacja. 
+
++ <p> Po odczytaniu wyników powyższych testów możemy wywnioskować, że model nie został poprawnie dobrany, ponieważ nie spełnia założeń klasycznego modelu regresji liniowej:</br>
+<ul>
+<li> Reszty nie mają rozkładu normalnego. </li>
+<li> Wariancja składnika losowego nie jest stała. </li>
+<ul/>
+
+#### Model bootstrapowy
+Teraz zostanie zbudowany model na podstawie metody bootstrapowej. Dobór zmiennych do takiego modelu przeprowadzony zostanie za pomocą metody krokowej, niestety jest ona wrażliwa na początkowe dane wejściowe. Jednym ze sposobów na złagodzenie tej wrażliwości jest wielokrotne uruchamianie regresji krokowej na próbkach bootstrapa. 
+
+```{r, echo = T, include = T}
+set.seed(123)
+fit.boot <- boot.stepAIC(model, data = cars, B = 100)
+```
+
+Zmienne za pomocą powyższego algorytmu to *cylinders*, *horsepower*, *weight* i *acceleration*. Na takich zmiennych zostanie właśnie zbudowany model bootstrapowy. 
+
+```{r, echo= T, include = T}
+model_boot <- stats::lm(lp100km ~ cylinders + horsepower + weight + acceleration, data = cars)
+summary(model_boot)
+```
+
+Jak widać model uzyskany za pomocą zmiennych wybranych przy pomocy metody bootstrap, ma największy dopasowany współczynnik determinacji R-kwadrat ze wszystkich zbudowanych modeli. Wszystkie zmienne znajdujące się w modelu okazały się być istotne. 
+
+##### Diagnostyka modelu
+
++ Testem RESET zbadane zostanie, czy wybór postaci analitycznej modelu jest prawidłowy:
+```{r echo=F}
+resettest(model_boot)
+```
+Z wyników można odczytać, że wartość p-value jest większa od przyjętego poziomu istotności dlatego nie ma podstaw do odrzucenia hipotezy zerowej testu. Wybór postaci analitycznej modelu jest prawidłowy.
+
++ Testem Jargue-Bera zbadane zostanie, czy reszty mają rozkład normalny:
+```{r echo=F}
+jarque.bera.test(model_boot$residuals)
+```
+Z wyników można odczytać, że wartość p-value jest mniejsza od przyjętego poziomu istotności dlatego należy odrzucić hipotezę zerową. Reszty nie mają rozkładu normalnego.
+
++ Testem Breuscha-Pagana zbadane zostanie, czy model jest homoskedastyczny:
+```{r echo=F}
+bptest(model_boot)
+```
+Z wyników można odczytać, że wartość p-value jest mniejsza od przyjętego poziomu istotności dlatego należy odrzucić hipotezę zerową. Badany model nie jest homoskedastyczny.
+
++ Testem Breuscha-Godfrey’a zbadane zostanie, czy w modelu występuje autokorelacja.
+```{r echo=F}
+bgtest(model_boot)
+```
+Z wyników można odczytać, że wartość p-value jest większa od przyjętego poziomu istotności dlatego nie ma podstaw do odrzucenia hipotezy zerowej testu. W modelu nie występuje autokorelacja. 
+
++ <p> Po odczytaniu wyników powyższych testów możemy wywnioskować, że model ten cierpi na te same "choroby" co model uzyskany przy pomocy metody Hellwiga. Reszty nie posiadają rozkładu normalnego oraz ich wariancja nie jest stała. </br>
+
+W następnym kroku zwizualizuję wartości rozkładów wspólnych współczynników uzyskanych dla modeli uzyskanych metodą Hellwiga oraz bootstrap.
+
+```{r Współczynniki disp, echo = F, include=T}
+set.seed(123)
+wsp_d <- tibble(Hellwig = model_hell$coefficients[2] * rnorm(10000),
+              Bootstrap = model_boot$coefficients[2] * rnorm(10000)) %>%
+              gather(type, parameter)
+
+wsp_d %>%
+  ggplot(aes(x = parameter, col = type))+ 
+  ggtitle("Gęstość rozkładu współczynników dla zmiennej displacement")+
+  labs(x="displacement", y="Gęstość")+
+  guides(colour = guide_legend(title="Legenda:")) +
+  geom_density()
+```
+<br/>
+Na wykresie wyraźnie widać, że rozkład wartości współczynnika *displacement* dla Hellwiga jest bardziej skupiony wokół średniej. Rozkład bootstrapa jest trochę bardziej rozłożona.
+
+```{r Współczynniki horse, echo = F, include=T}
+set.seed(123)
+wsp_h <- tibble(Hellwig = model_hell$coefficients[3] * rnorm(10000),
+              Bootstrap = model_boot$coefficients[3] * rnorm(10000)) %>%
+              gather(type, parameter)
+
+wsp_h %>%
+  ggplot(aes(x = parameter, col = type))+ 
+  ggtitle("Gęstość rozkładu współczynników dla zmiennej horsepower")+
+  labs(x="horsepower", y="Gęstość")+
+  guides(colour = guide_legend(title="Legenda:")) +
+  geom_density()
+```
+<br/>
+Na tym wykresie widać podobną zależność, rozkład wartości współczynnika *horsepower* dla Hellwiga jest bardziej skupiony wokół średniej. 
+
+```{r Współczynniki weight, echo = F, include=T}
+set.seed(123)
+wsp_w <- tibble(Hellwig = model_hell$coefficients[4] * rnorm(10000),
+              Bootstrap = model_boot$coefficients[4] * rnorm(10000)) %>%
+              gather(type, parameter)
+
+wsp_w %>%
+  ggplot(aes(x = parameter, col = type))+ 
+  ggtitle("Gęstość rozkładu współczynników dla zmiennej weight")+
+  labs(x="weight", y="Gęstość")+
+  guides(colour = guide_legend(title="Legenda:")) +
+  geom_density()
+```
+<br/>
+Na ostatnim wykresie przedstawiającym rozkład gęstości współczynnika *weight* widać odwrotną sytuację do poprzednich. Wartości tego współczynnika są bardziej skupione w przypadku modelu bootstrap. 
+
+## Podsumowanie
+
+Jak już wcześniej zostało zauważone, oba zbudowane modele były do siebie bardzo podobne pod względem współczynnika determinacji, jak i też spełnienia założeń regresji liniowej. Współczynnik determinacji okazał się nieznacznie lepszy dla modelu Bootstrap i to właśnie na tej podstawie stwierdzam, że jest on lepszy.
+
+Dzięki temu mogę potwierdzić hipotezę postawioną w rozdziale **Wprowadzenie**. Bootstrapowa metoda doboru zmiennych jest skuteczniejsza niż klasyczne metody ekonometryczne.
+
+Biorąc pod uwagę wyniki estymacji modelu jestem w stanie odpowiedzieć na kolejne hipotezy przedstawione w rozdziale **Analiza wizualna oraz opisowa** <br/>
+1.) Wraz ze zwiększaniem liczby cylindrów rośnie spalanie samochodu.<br/>
+2.) Zwiększanie objętości silnika nie ma statystycznie istotnego wpływu na spalanie.<br/>
+3.) Wraz ze wzrostem mocy samochodu rośnie spalanie samochodu.<br/>
+4.) Wraz ze wzrostem masy samochodu rośnie spalanie samochodu.<br/>
+Dodatkowo można jeszcze stwierdzić, że wraz ze zdolnością samochodu do szybkiego przyspiesznia, rośnie także jego konsumpcja paliwa. <br/>
